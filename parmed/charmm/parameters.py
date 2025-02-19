@@ -39,6 +39,16 @@ def _typeconv(name):
     # Lower To Upper
     return f'{name.upper()}LTU'.replace('*', 'STR').replace('+', 'P').replace('-', 'M')[:6]
 
+def _charmm_patom(name):
+    # If an atom name starts with an integer digit 1-9, CHARMM interprets it as
+    # a residue index in a potentially multi-residue patch.  Replicate this
+    # behavior of the PATOM() subroutine from within CHARMM and extract the
+    # 1-based residue index and true atom name.
+    if name[:1] in "123456789":
+        return int(name[:1]), name[1:]
+    else:
+        return 1, name
+
 class CharmmImproperMatchingMixin(object):
     """ Implements CHARMM-style improper matching """
 
@@ -858,7 +868,11 @@ class CharmmParameterSet(ParameterSet, CharmmImproperMatchingMixin):
                             group = []
                         elif line[:4].upper() == 'ATOM':
                             words = line.split()
-                            name = words[1].upper()
+                            residue_number, name = _charmm_patom(words[1].upper())
+                            if residue_number != 1:
+                                warnings.warn(f'Adding atom with residue number {residue_number} unsupported', ParameterWarning)
+                                skip_adding_residue = True
+                                break
                             type = words[2].upper()
                             charge = float(words[3])
                             if 'ALPHA' in words:
@@ -884,9 +898,13 @@ class CharmmParameterSet(ParameterSet, CharmmImproperMatchingMixin):
                             res.add_atom(atom)
                         elif line[:4].upper() == 'DELE':
                             words = line.split()
-                            name = words[2].upper()
                             entity_type = words[1].upper()
                             if entity_type == 'ATOM':
+                                residue_number, name = _charmm_patom(words[2].upper())
+                                if residue_number != 1:
+                                    warnings.warn(f'Removing atom with residue number {residue_number} unsupported', ParameterWarning)
+                                    skip_adding_residue = True
+                                    break
                                 res.delete_atoms.append(name)
                             elif entity_type == 'IMPR':
                                 res.delete_impropers.append(words[2:5])
