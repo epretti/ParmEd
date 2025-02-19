@@ -364,19 +364,19 @@ class CharmmParameterSet(ParameterSet, CharmmImproperMatchingMixin):
             if line.upper().startswith('BOND'):
                 section = 'BONDS'
                 continue
-            if line.upper().startswith('ANGLE') or line.upper().startswith('THETA'):
+            if line.upper().startswith('ANGL') or line.upper().startswith('THET'):
                 section = 'ANGLES'
                 continue
             if line.upper().startswith('DIHE') or line.upper().startswith('PHI'):
                 section = 'DIHEDRALS'
                 continue
-            if line.upper().startswith('IMPROPER') or line.upper().startswith('IMPHI'):
+            if line.upper().startswith('IMPR') or line.upper().startswith('IMPH'):
                 section = 'IMPROPER'
                 continue
             if line.upper().startswith('CMAP'):
                 section = 'CMAP'
                 continue
-            if line.upper().startswith('NONBONDED'):
+            if line.upper().startswith('NONB'):
                 read_first_nonbonded = declared_geometric = False
                 section = 'NONBONDED'
                 # Get nonbonded keywords
@@ -408,13 +408,13 @@ class CharmmParameterSet(ParameterSet, CharmmImproperMatchingMixin):
                         self.combining_rule = 'geometric'
                         declared_geometric = True
                 continue
-            if line.upper().startswith('NBFIX'):
+            if line.upper().startswith('NBFI'):
                 section = 'NBFIX'
                 continue
-            if line.upper().startswith('HBOND'):
+            if line.upper().startswith('HBON'):
                 section = None
                 continue
-            if line.upper().startswith('THOLE'):
+            if line.upper().startswith('THOL'):
                 section = 'NBTHOLE'
                 continue
             # It seems like files? sections? can be terminated with 'END'
@@ -852,7 +852,7 @@ class CharmmParameterSet(ParameterSet, CharmmImproperMatchingMixin):
                     ictable = []
                     while line:
                         line = line.lstrip()
-                        if line[:5].upper() == 'GROUP':
+                        if line[:4].upper() == 'GROU':
                             if group:
                                 res.groups.append(group)
                             group = []
@@ -882,7 +882,7 @@ class CharmmParameterSet(ParameterSet, CharmmImproperMatchingMixin):
                                 atom = Atom(name=name, type=type, charge=charge)
                             group.append(atom)
                             res.add_atom(atom)
-                        elif line[:6].upper() == 'DELETE':
+                        elif line[:4].upper() == 'DELE':
                             words = line.split()
                             name = words[2].upper()
                             entity_type = words[1].upper()
@@ -921,11 +921,11 @@ class CharmmParameterSet(ParameterSet, CharmmImproperMatchingMixin):
                                 res.add_bond(a1, a2)
                         elif line[:4].upper() == 'CMAP':
                             pass
-                        elif line[:5].upper() == 'DONOR':
+                        elif line[:4].upper() == 'DONO':
                             pass
-                        elif line[:6].upper() == 'ACCEPT':
+                        elif line[:4].upper() == 'ACCE':
                             pass
-                        elif line[:8].upper() == 'LONEPAIR':
+                        elif line[:4].upper() == 'LONE':
                             # See: https://www.charmm.org/charmm/documentation/by-version/c40b1/params/doc/lonepair/
                             # TODO: This currently doesn't handle some formats, like Note 3 in the above URL
                             words = line.split()
@@ -953,7 +953,7 @@ class CharmmParameterSet(ParameterSet, CharmmImproperMatchingMixin):
                             )
                         elif line[:3].upper() == 'END':
                             break
-                        elif line[:5].upper() == 'PATCH':
+                        elif line[:4].upper() == 'PATC':
                             it = iter(line.split()[1:])
                             for tok, val in zip(it, it):
                                 if val.upper() == 'NONE': val = None
@@ -967,7 +967,7 @@ class CharmmParameterSet(ParameterSet, CharmmImproperMatchingMixin):
                                 res._impr.append((a1, a2, a3, a4))
                                 if a2[0] == '-' or a3[0] == '-' or a4 == '-':
                                     res.head = res[a1]
-                        elif line[:10].upper() == 'ANISOTROPY':
+                        elif line[:4].upper() == 'ANIS':
                             words = line.split()
                             atoms = [res[name] for name in words[1:5]]
                             keywords = {words[index].upper() : float(words[index+1])
