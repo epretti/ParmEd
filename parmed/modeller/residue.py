@@ -502,11 +502,6 @@ class ResidueTemplate:
                 # removal of impropers doesn't do anything as far as OpenMM is concerned, so don't note this as a modification having been made
             except ValueError as e:
                 raise IncompatiblePatchError(f'Improper {impr} was not found in residue to be patched.')
-        # Check that the net charge is integral.
-        net_charge = residue.net_charge
-        is_integral = (round(net_charge, precision) - round(net_charge)) == 0.0
-        if not is_integral:
-            raise IncompatiblePatchError(f'Patch is not compatible with residue due to non-integral charge (charge was {net_charge}).')
         # Ensure residue is connected
         import networkx as nx
         G = residue.to_networkx(False)
