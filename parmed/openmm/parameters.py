@@ -813,6 +813,9 @@ class OpenMMParameterSet(ParameterSet, CharmmImproperMatchingMixin, metaclass=Fi
                     raise KeyError(msg) from err
                 patched_residue = residue.apply_patch(patch)
 
+                residue_bonds = set(_bond_to_key(bond) for bond in residue.bonds)
+                patched_residue_bonds = set(_bond_to_key(bond) for bond in patched_residue.bonds)
+
                 instructions = []
                 for atom in patch.atoms:
                     if atom.name not in residue:
@@ -832,11 +835,11 @@ class OpenMMParameterSet(ParameterSet, CharmmImproperMatchingMixin, metaclass=Fi
                     instructions.append(('RemoveBond', dict(atomName1=bond.atom1.name, atomName2=bond.atom2.name)))
 
                 for bond in patched_residue.bonds:
-                    if (bond.atom1.name not in residue) or (bond.atom2.name not in residue):
+                    if _bond_to_key(bond) not in residue_bonds:
                         if (bond.atom1.atomic_number != 0) and (bond.atom2.atomic_number != 0): # CHARMM adds bonds to lone pairs, which we need to omit.
                             instructions.append(('AddBond', dict(atomName1=bond.atom1.name, atomName2=bond.atom2.name)))
                 for bond in residue.bonds:
-                    if (bond.atom1.name not in patched_residue) or (bond.atom2.name not in patched_residue):
+                    if _bond_to_key(bond) not in patched_residue_bonds:
                         instructions.append(('RemoveBond', dict(atomName1=bond.atom1.name, atomName2=bond.atom2.name)))
 
                 if (residue.head is not None) and (patched_residue.head is None):
@@ -1215,3 +1218,6 @@ for force in sys.getForces():
         # Not currently implemented, so throw an exception if any unsupported options are specified
         if self.combining_rule == 'geometric':
             raise NotImplementedError('Geometric combining rule not currently supported.')
+
+def _bond_to_key(bond):
+    return tuple(sorted((bond.atom1.name, bond.atom2.name)))
