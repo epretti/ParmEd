@@ -374,8 +374,7 @@ class OpenMMParameterSet(ParameterSet, CharmmImproperMatchingMixin, metaclass=Fi
         root = etree.Element('ForceField')
         self._write_omm_provenance(root, provenance)
         self._write_omm_atom_types(root, skip_types, skip_residues)
-        self._write_omm_residues(root, skip_residues, skip_duplicates,
-                                 valid_patches_for_residue=valid_patches_for_residue, is_glycam=is_glycam)
+        self._write_omm_residues(root, skip_residues, skip_duplicates, is_glycam=is_glycam)
         self._write_omm_patches(root, valid_residues_for_patch)
         self._write_omm_bonds(root, skip_types)
         self._write_omm_angles(root, skip_types)
@@ -519,25 +518,17 @@ class OpenMMParameterSet(ParameterSet, CharmmImproperMatchingMixin, metaclass=Fi
     @staticmethod
     def _templhasher(residue):
         """
-        Create a unique hash for each residue and patch template using only properties rendered to OpenMM ffxml.
+        Create a unique key for each residue and patch template using only properties rendered to OpenMM ffxml.
         """
-        hash_info = tuple()
-        # Sort tuples of atom properties by atom name
-        if len(residue.atoms) > 0:
-            hash_info += tuple(sorted( [(atom.type, str(atom.charge)) for atom in residue.atoms] ))
-        # Sort list of deleted atoms by atom name
-        if hasattr(residue, 'delete_atoms') and len(residue.delete_atoms) > 0:
-            hash_info += tuple(sorted([atom_name for atom_name in residue.delete_atoms]))
-        # Sort list of bonds by first bond name
-        if len(residue.bonds) > 0:
-            hash_info += tuple(sorted([(bond.atom1.name, bond.atom2.name) if (bond.atom1.name < bond.atom2.name) else (bond.atom2.name, bond.atom1.name) for bond in residue.bonds] ))
-        # Add head and tail
-        if residue.head:
-            hash_info += (residue.head.name,)
-        if residue.tail:
-            hash_info += (residue.tail.name,)
-        # TODO: Is there any other data that is rendered to ffxml files we should include?
-        return hash(hash_info)
+        return (
+            tuple(sorted(tuple((atom.type, atom.charge)) for atom in residue.atoms)),
+            tuple(sorted(tuple(sorted((bond.atom1.name, bond.atom2.name))) for bond in residue.bonds)),
+            tuple(sorted(residue.delete_atoms)) if hasattr(residue, 'delete_atoms') else (),
+            tuple(sorted(tuple(sorted(add_bond[:2])) for add_bond in residue.add_bonds)) if hasattr(residue, 'add_bonds') else (),
+            residue.head.name if residue.head else None,
+            residue.tail.name if residue.tail else None,
+            tuple(sorted(connection.name for connection in residue.connections)),
+        )
 
     def _write_omm_provenance(self, root, provenance):
         info = etree.SubElement(root, 'Info')
@@ -673,10 +664,8 @@ class OpenMMParameterSet(ParameterSet, CharmmImproperMatchingMixin, metaclass=Fi
         return external_bonds
 
 
-    def _write_omm_residues(self, xml_root, skip_residues, skip_duplicates, valid_patches_for_residue=None, is_glycam=False):
+    def _write_omm_residues(self, xml_root, skip_residues, skip_duplicates, is_glycam=False):
         if not self.residues: return
-        if valid_patches_for_residue is None:
-            valid_patches_for_residue = OrderedDict()
         written_residues = OrderedDict()
         xml_section = etree.SubElement(xml_root, 'Residues')
         for name, residue in self.residues.items():
@@ -717,9 +706,6 @@ class OpenMMParameterSet(ParameterSet, CharmmImproperMatchingMixin, metaclass=Fi
                 for atom in external_bonds:
                     if atom != residue.head and atom != residue.tail:
                         etree.SubElement(xml_residue, 'ExternalBond', atomName=atom.name)
-            if residue.name in valid_patches_for_residue:
-                for patch_name in valid_patches_for_residue[residue.name]:
-                    etree.SubElement(xml_residue, 'AllowPatch', name=patch_name)
 
     def _determine_valid_patch_combinations(self, skip_residues):
         """
@@ -760,7 +746,7 @@ class OpenMMParameterSet(ParameterSet, CharmmImproperMatchingMixin, metaclass=Fi
 
         return [valid_residues_for_patch, valid_patches_for_residue]
 
-    def _write_omm_patches(self, xml_root, valid_residues_for_patch, write_apply_to_residue=False):
+    def _write_omm_patches(self, xml_root, valid_residues_for_patch):
         """
         Write patch definitions for OpenMM ForceField
 
@@ -770,9 +756,6 @@ class OpenMMParameterSet(ParameterSet, CharmmImproperMatchingMixin, metaclass=Fi
             The XML Element write the <Patches> section to.
         valid_residues_for_patch : dict of str : str
             valid_residues_for_patch[patch_name] lists the residue names valid for this patch
-        write_apply_to_residue : bool, optional, default=False
-            If True, will write <ApplyToResidue> tags.
-
         """
         if not self.patches: return
         written_patches = OrderedDict()
@@ -788,18 +771,13 @@ class OpenMMParameterSet(ParameterSet, CharmmImproperMatchingMixin, metaclass=Fi
                 warnings.warn(f'Skipping writing of patch {patch} because OpenMM considers it identical to {patch_collision}')
                 continue
             written_patches[templhash] = patch
-            if patch.override_level == 0:
-                patch_xml = etree.SubElement(xml_patches, 'Patch', name=patch.name)
-            else:
-                patch_xml = etree.SubElement(xml_patches, 'Patch', name=patch.name, override=str(patch.override_level))
 
-            # To generate the patch definition, we need to apply it to a residue and see exactly what
-            # changes.  We might get different definitions depending on which residue we pick, so try
-            # all possible residues to take the most common result.  We prefer versions that replace
-            # external bonds, since that is the intended use of most patches.
+            # To generate the patch definition, we need to apply it to a residue
+            # and see exactly what changes.  We might get different definitions
+            # depending on which residue we pick, so try all possible residues
+            # to generate all possible definitions.
 
             versions = {}
-            versions_with_external = {}
             for residue_name in valid_residues_for_patch[name]:
                 try:
                     residue = self.residues[residue_name]
@@ -830,17 +808,22 @@ class OpenMMParameterSet(ParameterSet, CharmmImproperMatchingMixin, metaclass=Fi
 
                 for atom_name in patch.delete_atoms:
                     instructions.append(('RemoveAtom', dict(name=atom_name)))
-
-                for bond in patch.bonds:
-                    instructions.append(('RemoveBond', dict(atomName1=bond.atom1.name, atomName2=bond.atom2.name)))
+                
+                # TODO: do patches ever have bonds in the bonds list, and if so,
+                # are these bonds supposed to be removed?
+                assert not patch.bonds
+                # for bond in patch.bonds:
+                #     instructions.append(('RemoveBond', dict(atomName1=bond.atom1.name, atomName2=bond.atom2.name)))
 
                 for bond in patched_residue.bonds:
                     if _bond_to_key(bond) not in residue_bonds:
                         if (bond.atom1.atomic_number != 0) and (bond.atom2.atomic_number != 0): # CHARMM adds bonds to lone pairs, which we need to omit.
-                            instructions.append(('AddBond', dict(atomName1=bond.atom1.name, atomName2=bond.atom2.name)))
+                            name_1, name_2 = sorted((bond.atom1.name, bond.atom2.name))
+                            instructions.append(('AddBond', dict(atomName1=name_1, atomName2=name_2)))
                 for bond in residue.bonds:
                     if _bond_to_key(bond) not in patched_residue_bonds:
-                        instructions.append(('RemoveBond', dict(atomName1=bond.atom1.name, atomName2=bond.atom2.name)))
+                        name_1, name_2 = sorted((bond.atom1.name, bond.atom2.name))
+                        instructions.append(('RemoveBond', dict(atomName1=name_1, atomName2=name_2)))
 
                 if (residue.head is not None) and (patched_residue.head is None):
                     instructions.append(('RemoveExternalBond', dict(atomName=residue.head.name)))
@@ -854,29 +837,21 @@ class OpenMMParameterSet(ParameterSet, CharmmImproperMatchingMixin, metaclass=Fi
                 for lonepair in patch.lonepairs:
                     instructions.append(('VirtualSite', self._get_lonepair_parameters(lonepair)))
 
-                if write_apply_to_residue:
-                    for residue_name in valid_residues_for_patch[patch.name]:
-                        instructions.append(('ApplyToResidue', dict(name=residue_name)))
-
                 # Convert to hashable types
-                instructions = tuple((i[0], tuple(item for item in i[1].items())) for i in instructions)
-                if instructions in versions:
-                    versions[instructions] += 1
-                else:
-                    versions[instructions] = 1
-                if any(i[0] == 'RemoveExternalBond' for i in instructions):
-                    if instructions in versions_with_external:
-                        versions_with_external[instructions] += 1
-                    else:
-                        versions_with_external[instructions] = 1
+                instructions = tuple(sorted((command, tuple(attrib.items())) for command, attrib in instructions))
+                versions.setdefault(instructions, []).append(residue_name)
 
-            # Write the consensus definition.
-            if len(versions_with_external) > 0:
-                versions = versions_with_external
-            max_count = max(versions.values())
-            instructions = [key for key, value in versions.items() if value == max_count][0]
-            for command, attrib in instructions:
-                etree.SubElement(patch_xml, command, dict(attrib))
+            for version_index, (instructions, residue_names) in enumerate(sorted(versions.items())):
+                patch_name = f'{patch.name}_{version_index}'
+                if patch.override_level == 0:
+                    patch_xml = etree.SubElement(xml_patches, 'Patch', name=patch_name)
+                else:
+                    patch_xml = etree.SubElement(xml_patches, 'Patch', name=patch_name, override=str(patch.override_level))
+
+                for command, attrib in instructions:
+                    etree.SubElement(patch_xml, command, dict(attrib))
+                for residue_name in residue_names:
+                    etree.SubElement(patch_xml, 'ApplyToResidue', dict(name=residue_name))
 
     def _write_omm_bonds(self, xml_root, skip_types):
         if not self.bond_types: return
