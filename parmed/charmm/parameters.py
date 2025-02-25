@@ -962,7 +962,7 @@ class CharmmParameterSet(ParameterSet, CharmmImproperMatchingMixin):
                             theta = keywords['ANGL'] # degrees
                             phi = keywords['DIHE'] # degrees
                             lptypes = { 'BISE' : 'bisector', 'RELA' : 'relative' }
-                            lonepair = (lptypes[lptype_keyword], a1, a2, a3, a4, r, theta, phi) # TODO: Define a LonePair object?
+                            lonepair = (lptypes[lptype_keyword], a1, a2, a4, a3, r, theta, phi) # TODO: Define a LonePair object?
                             res.lonepairs.append(lonepair)
                         elif line[:2].upper() == 'IC':
                             words = line.split()[1:]
