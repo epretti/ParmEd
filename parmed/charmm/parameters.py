@@ -899,15 +899,17 @@ class CharmmParameterSet(ParameterSet, CharmmImproperMatchingMixin):
                         elif line[:4].upper() == 'DELE':
                             words = line.split()
                             entity_type = words[1].upper()
-                            if entity_type == 'ATOM':
+                            if entity_type[:4] == 'ATOM':
                                 residue_number, name = _charmm_patom(words[2].upper())
                                 if residue_number != 1:
                                     warnings.warn(f'Removing atom with residue number {residue_number} unsupported', ParameterWarning)
                                     skip_adding_residue = True
                                     break
                                 res.delete_atoms.append(name)
-                            elif entity_type == 'IMPR':
-                                res.delete_impropers.append(words[2:5])
+                            elif entity_type[:4] == 'IMPR':
+                                res.delete_impropers.append(words[2:6])
+                            elif entity_type[:4] == 'ANIS':
+                                res.delete_anisotropies.append(words[2:6])
                             else:
                                 warnings.warn(
                                     f'WARNING: Ignoring "{line.strip()}" because entity type '
@@ -992,7 +994,9 @@ class CharmmParameterSet(ParameterSet, CharmmImproperMatchingMixin):
                                         for index in range(5, len(words), 2)}
                             a11 = float(keywords['A11'])
                             a22 = float(keywords['A22'])
-                            atoms[0].anisotropy = DrudeAnisotropy(*atoms, a11=a11, a22=a22)
+                            anisotropy = DrudeAnisotropy(*atoms, a11=a11, a22=a22)
+                            atoms[0].anisotropy = anisotropy
+                            res.anisotropies.append(anisotropy)
                         elif line[:4].upper() in ('RESI', 'PRES', 'MASS'):
                             # Back up a line and bail
                             break

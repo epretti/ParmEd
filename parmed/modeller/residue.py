@@ -759,6 +759,8 @@ class PatchTemplate(ResidueTemplate):
         List of atom names that need to be deleted in applying the patch
     delete_impropers : list of tuple of str
         List of impropers (tuple of atom names) that need to be deleted in applying the patch
+    delete_anisotropies : list of str
+        List of anisotropies (tuple of atom names) that need to be deleted in applying the patch
 
     See Also
     --------
@@ -775,6 +777,7 @@ class PatchTemplate(ResidueTemplate):
         self.add_bonds = []
         self.delete_atoms = []
         self.delete_impropers = []
+        self.delete_anisotropies = []
 
 class ResidueTemplateContainer(list):
     """
