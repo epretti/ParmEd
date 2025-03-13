@@ -39,6 +39,16 @@ def _typeconv(name):
     # Lower To Upper
     return f'{name.upper()}LTU'.replace('*', 'STR').replace('+', 'P').replace('-', 'M')[:6]
 
+def _charmm_patom(name):
+    # If an atom name starts with an integer digit 1-9, CHARMM interprets it as
+    # a residue index in a potentially multi-residue patch.  Replicate this
+    # behavior of the PATOM() subroutine from within CHARMM and extract the
+    # 1-based residue index and true atom name.
+    if name[:1] in "123456789":
+        return int(name[:1]), name[1:]
+    else:
+        return 1, name
+
 class CharmmImproperMatchingMixin(object):
     """ Implements CHARMM-style improper matching """
 
@@ -364,19 +374,19 @@ class CharmmParameterSet(ParameterSet, CharmmImproperMatchingMixin):
             if line.upper().startswith('BOND'):
                 section = 'BONDS'
                 continue
-            if line.upper().startswith('ANGLE') or line.upper().startswith('THETA'):
+            if line.upper().startswith('ANGL') or line.upper().startswith('THET'):
                 section = 'ANGLES'
                 continue
             if line.upper().startswith('DIHE') or line.upper().startswith('PHI'):
                 section = 'DIHEDRALS'
                 continue
-            if line.upper().startswith('IMPROPER') or line.upper().startswith('IMPHI'):
+            if line.upper().startswith('IMPR') or line.upper().startswith('IMPH'):
                 section = 'IMPROPER'
                 continue
             if line.upper().startswith('CMAP'):
                 section = 'CMAP'
                 continue
-            if line.upper().startswith('NONBONDED'):
+            if line.upper().startswith('NONB'):
                 read_first_nonbonded = declared_geometric = False
                 section = 'NONBONDED'
                 # Get nonbonded keywords
@@ -408,13 +418,13 @@ class CharmmParameterSet(ParameterSet, CharmmImproperMatchingMixin):
                         self.combining_rule = 'geometric'
                         declared_geometric = True
                 continue
-            if line.upper().startswith('NBFIX'):
+            if line.upper().startswith('NBFI'):
                 section = 'NBFIX'
                 continue
-            if line.upper().startswith('HBOND'):
+            if line.upper().startswith('HBON'):
                 section = None
                 continue
-            if line.upper().startswith('THOLE'):
+            if line.upper().startswith('THOL'):
                 section = 'NBTHOLE'
                 continue
             # It seems like files? sections? can be terminated with 'END'
@@ -852,13 +862,17 @@ class CharmmParameterSet(ParameterSet, CharmmImproperMatchingMixin):
                     ictable = []
                     while line:
                         line = line.lstrip()
-                        if line[:5].upper() == 'GROUP':
+                        if line[:4].upper() == 'GROU':
                             if group:
                                 res.groups.append(group)
                             group = []
                         elif line[:4].upper() == 'ATOM':
                             words = line.split()
-                            name = words[1].upper()
+                            residue_number, name = _charmm_patom(words[1].upper())
+                            if residue_number != 1:
+                                warnings.warn(f'Adding atom with residue number {residue_number} unsupported', ParameterWarning)
+                                skip_adding_residue = True
+                                break
                             type = words[2].upper()
                             charge = float(words[3])
                             if 'ALPHA' in words:
@@ -882,14 +896,20 @@ class CharmmParameterSet(ParameterSet, CharmmImproperMatchingMixin):
                                 atom = Atom(name=name, type=type, charge=charge)
                             group.append(atom)
                             res.add_atom(atom)
-                        elif line[:6].upper() == 'DELETE':
+                        elif line[:4].upper() == 'DELE':
                             words = line.split()
-                            name = words[2].upper()
                             entity_type = words[1].upper()
-                            if entity_type == 'ATOM':
+                            if entity_type[:4] == 'ATOM':
+                                residue_number, name = _charmm_patom(words[2].upper())
+                                if residue_number != 1:
+                                    warnings.warn(f'Removing atom with residue number {residue_number} unsupported', ParameterWarning)
+                                    skip_adding_residue = True
+                                    break
                                 res.delete_atoms.append(name)
-                            elif entity_type == 'IMPR':
-                                res.delete_impropers.append(words[2:5])
+                            elif entity_type[:4] == 'IMPR':
+                                res.delete_impropers.append(words[2:6])
+                            elif entity_type[:4] == 'ANIS':
+                                res.delete_anisotropies.append(words[2:6])
                             else:
                                 warnings.warn(
                                     f'WARNING: Ignoring "{line.strip()}" because entity type '
@@ -921,11 +941,11 @@ class CharmmParameterSet(ParameterSet, CharmmImproperMatchingMixin):
                                 res.add_bond(a1, a2)
                         elif line[:4].upper() == 'CMAP':
                             pass
-                        elif line[:5].upper() == 'DONOR':
+                        elif line[:4].upper() == 'DONO':
                             pass
-                        elif line[:6].upper() == 'ACCEPT':
+                        elif line[:4].upper() == 'ACCE':
                             pass
-                        elif line[:8].upper() == 'LONEPAIR':
+                        elif line[:4].upper() == 'LONE':
                             # See: https://www.charmm.org/charmm/documentation/by-version/c40b1/params/doc/lonepair/
                             # TODO: This currently doesn't handle some formats, like Note 3 in the above URL
                             words = line.split()
@@ -944,7 +964,7 @@ class CharmmParameterSet(ParameterSet, CharmmImproperMatchingMixin):
                             theta = keywords['ANGL'] # degrees
                             phi = keywords['DIHE'] # degrees
                             lptypes = { 'BISE' : 'bisector', 'RELA' : 'relative' }
-                            lonepair = (lptypes[lptype_keyword], a1, a2, a3, a4, r, theta, phi) # TODO: Define a LonePair object?
+                            lonepair = (lptypes[lptype_keyword], a1, a2, a4, a3, r, theta, phi) # TODO: Define a LonePair object?
                             res.lonepairs.append(lonepair)
                         elif line[:2].upper() == 'IC':
                             words = line.split()[1:]
@@ -953,7 +973,7 @@ class CharmmParameterSet(ParameterSet, CharmmImproperMatchingMixin):
                             )
                         elif line[:3].upper() == 'END':
                             break
-                        elif line[:5].upper() == 'PATCH':
+                        elif line[:4].upper() == 'PATC':
                             it = iter(line.split()[1:])
                             for tok, val in zip(it, it):
                                 if val.upper() == 'NONE': val = None
@@ -967,14 +987,16 @@ class CharmmParameterSet(ParameterSet, CharmmImproperMatchingMixin):
                                 res._impr.append((a1, a2, a3, a4))
                                 if a2[0] == '-' or a3[0] == '-' or a4 == '-':
                                     res.head = res[a1]
-                        elif line[:10].upper() == 'ANISOTROPY':
+                        elif line[:4].upper() == 'ANIS':
                             words = line.split()
                             atoms = [res[name] for name in words[1:5]]
                             keywords = {words[index].upper() : float(words[index+1])
                                         for index in range(5, len(words), 2)}
                             a11 = float(keywords['A11'])
                             a22 = float(keywords['A22'])
-                            atoms[0].anisotropy = DrudeAnisotropy(*atoms, a11=a11, a22=a22)
+                            anisotropy = DrudeAnisotropy(*atoms, a11=a11, a22=a22)
+                            atoms[0].anisotropy = anisotropy
+                            res.anisotropies.append(anisotropy)
                         elif line[:4].upper() in ('RESI', 'PRES', 'MASS'):
                             # Back up a line and bail
                             break
