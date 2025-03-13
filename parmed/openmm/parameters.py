@@ -276,7 +276,7 @@ class OpenMMParameterSet(ParameterSet, CharmmImproperMatchingMixin, metaclass=Fi
         return atom.type
 
     def write(self, dest, provenance=None, write_unused=True, separate_ljforce=False,
-              improper_dihedrals_ordering='default', charmm_imp=False, skip_duplicates=True, is_glycam=False):
+              improper_dihedrals_ordering='default', charmm_imp=False, skip_duplicates=True, is_glycam=False, keep_types=None):
         """ Write the parameter set to an XML file for use with OpenMM
 
         Parameters
@@ -336,6 +336,8 @@ class OpenMMParameterSet(ParameterSet, CharmmImproperMatchingMixin, metaclass=Fi
             hashing is not aware of chirality, if you wish to use the results in
             simulations you will need to explicitly provide the template names
             for affected residues.
+        keep_types : iterable of str or None
+            Atom types not to discard even when write_unused is False.
 
         Notes
         -----
@@ -347,6 +349,8 @@ class OpenMMParameterSet(ParameterSet, CharmmImproperMatchingMixin, metaclass=Fi
         if not write_unused:
             skip_residues = self._find_unused_residues()
             skip_types = self._find_unused_types(skip_residues)
+            if keep_types is not None:
+                skip_types -= set(keep_types)
             if skip_residues:
                 warnings.warn('Some residue templates using unavailable AtomTypes '
                               'were found. They will not be written to the ffxml '
