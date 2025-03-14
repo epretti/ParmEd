@@ -633,46 +633,78 @@ class OpenMMParameterSet(ParameterSet, CharmmImproperMatchingMixin, metaclass=Fi
             atoms in the residue with external bonds
         """
 
+        residue = self.residues[residue_name]
+
         # If its a sulfate (special case), the S is the atom with an external bond
         if residue_name == 'SO3':
-            return [atom for atom in self.residues[residue_name] if atom.name == 'S1']
+            return [atom for atom in residue if atom.name == 'S1']
 
         # Define dict of valences for each atom (in glycan residues)
-        d = {'C': 4, 'N': 3, 'O': 2, 'H': 1} # Key: atom element name, Value: number of bonds it should have
+        valence_table = {'C': 4, 'N': 3, 'O': 2, 'H': 1} # Key: atom element name, Value: number of bonds it should have
 
-        # Iterate over the atoms in the residue and determine whether it has an external bond
-        external_bonds = []
-        for atom in self.residues[residue_name].atoms:
-            bonds = 0
-
-            # Add an extra bond if the atom is the O in a carbonyl (double bond)
-            if atom.name in ['OD1', 'O', 'O2N', 'OXT']:
-                bonds += 1
-
-            # Count the number of bonds this atom has within the residue
-            for bond in self.residues[residue_name].bonds:
-                if bond.atom1 == atom or bond.atom2 == atom:
-                    bonds += 1
-
-                # Add extra bonds if the atom is the C in a carbonyl
-                if (bond.atom1.name == 'OD1' and bond.atom2 == atom) or (bond.atom1 == atom and bond.atom2.name == 'OD1'):
-                    bonds += 1
-                elif (bond.atom1.name == 'O' and bond.atom2 == atom) or (bond.atom1 == atom and bond.atom2.name == 'O'):
-                    bonds += 1
-                elif (bond.atom1.name == 'O2N' and bond.atom2 == atom) or (bond.atom1 == atom and bond.atom2.name == 'O2N'):
-                    bonds += 1
-                elif (bond.atom1.name == 'OXT' and bond.atom2 == atom) or (bond.atom1 == atom and bond.atom2.name == 'OXT'):
-                    bonds += 1
-             
-            # Get the atom's element name
+        # Build a list of element names for the atoms.
+        element_names = []
+        for atom in residue.atoms:
             if atom.element_name == 'Og': # If the atom is in a glycan, the element names are not set properly
                 element_name = atom.name[0]
             else:
                 element_name = atom.element_name
+            element_names.append(element_name)
 
-            # If the number of bonds within the residue does not equal the number of bonds the atom should have, the atom  has an external bond 
-            if d[element_name] != bonds:
-                external_bonds.append(atom)
+        expected_valences = []
+        actual_valences = []
+
+        # Build a list of the number of bonds we expect for each atom.
+        for element_name in element_names:
+            expected_valences.append(valence_table[element_name])
+            actual_valences.append(0)
+
+        # Add single bonds.
+        for bond in residue.bonds:
+            actual_valences[bond.atom1.idx] += 1
+            actual_valences[bond.atom2.idx] += 1
+
+        # Prepare a list of bonds to each atom.
+        bonds_to_atoms = [[] for atom in residue.atoms]
+        for bond in residue.bonds:
+            bonds_to_atoms[bond.atom1.idx].append(bond.atom2.idx)
+            bonds_to_atoms[bond.atom2.idx].append(bond.atom1.idx)
+
+        # Use it to search for carboxylates.
+        for index in range(len(residue.atoms)):
+            bond_elements = [element_names[bonded_index] for bonded_index in bonds_to_atoms[index]]
+
+            if element_names[index] == 'C':
+                bond_oxygens = [bonded_index for bonded_index, bond_element in zip(bonds_to_atoms[index], bond_elements) if bond_element == 'O']
+
+                # If this is a carbon, and it is bonded to two oxygens that are
+                # only bonded to this carbon, we found a -COO[-].
+                if len(bond_elements) == 3 and len(bond_oxygens) == 2 and all(bonds_to_atoms[oxygen_index] == [index] for oxygen_index in bond_oxygens):
+                    expected_valences[index] -= 1
+                    for oxygen_index in bond_oxygens:
+                        expected_valences[oxygen_index] -= 1
+
+        # Add double bonds.
+        for bond in residue.bonds:
+            index_1 = bond.atom1.idx
+            index_2 = bond.atom2.idx
+            if actual_valences[index_1] < expected_valences[index_1] and actual_valences[index_2] < expected_valences[index_2]:
+                actual_valences[index_1] += 1
+                actual_valences[index_2] += 1
+
+        # If any nitrogen atoms have actual - expected = 1, this is OK as it
+        # indicates that the nitrogen is positively charged.
+        for atom, element_name, actual, expected in zip(residue.atoms, element_names, actual_valences, expected_valences):
+            if actual - expected > (1 if element_name == 'N' else 0):
+                raise ValueError(f"bonding in GLYCAM residue {residue.name} at atom {atom.name} not understood")
+
+        external_bonds = [atom for atom, expected, actual in zip(residue.atoms, expected_valences, actual_valences) if actual < expected]
+
+        # Move the head and the tail to the front of the list for consistent ordering.
+        for head_or_tail in (residue.tail, residue.head):
+            if head_or_tail in external_bonds:
+                external_bonds.remove(head_or_tail)
+                external_bonds.insert(0, head_or_tail)
 
         return external_bonds
 
@@ -712,15 +744,17 @@ class OpenMMParameterSet(ParameterSet, CharmmImproperMatchingMixin, metaclass=Fi
                 etree.SubElement(xml_residue, 'VirtualSite', self._get_lonepair_parameters(lonepair))
             for atom in residue.connections:
                 etree.SubElement(xml_residue, 'ExternalBond', atomName=atom.name)
-            if residue.head is not None:
-                etree.SubElement(xml_residue, 'ExternalBond', atomName=residue.head.name)
-            if residue.tail is not None and residue.tail is not residue.head:
-                etree.SubElement(xml_residue, 'ExternalBond', atomName=residue.tail.name)
             if is_glycam:
+                # For GLYCAM, do not trust the given head and tail as they may
+                # be incorrect in the source files.
                 external_bonds = self._get_atoms_with_external_bonds(name)
                 for atom in external_bonds:
-                    if atom != residue.head and atom != residue.tail:
-                        etree.SubElement(xml_residue, 'ExternalBond', atomName=atom.name)
+                    etree.SubElement(xml_residue, 'ExternalBond', atomName=atom.name)
+            else:
+                if residue.head is not None:
+                    etree.SubElement(xml_residue, 'ExternalBond', atomName=residue.head.name)
+                if residue.tail is not None and residue.tail is not residue.head:
+                    etree.SubElement(xml_residue, 'ExternalBond', atomName=residue.tail.name)
             if residue.name in valid_patches_for_residue:
                 for patch_name in valid_patches_for_residue[residue.name]:
                     etree.SubElement(xml_residue, 'AllowPatch', name=patch_name)
