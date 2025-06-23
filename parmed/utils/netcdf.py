@@ -43,7 +43,6 @@ from platform import python_implementation
 import mmap as mm
 
 import numpy as np
-from numpy.compat import asbytes, asstr
 from numpy import frombuffer, dtype, empty, array, asarray
 from numpy import little_endian as LITTLE_ENDIAN
 from functools import reduce
@@ -487,7 +486,7 @@ class netcdf_file(object):
         self._write_att_array(var._attributes)
 
         nc_type = REVERSE[var.typecode(), var.itemsize()]
-        self.fp.write(asbytes(nc_type))
+        self.fp.write(nc_type)
 
         if not var.isrec:
             vsize = var.data.size * var.data.itemsize
@@ -580,7 +579,7 @@ class netcdf_file(object):
 
         values = asarray(values, dtype=dtype_)
 
-        self.fp.write(asbytes(nc_type))
+        self.fp.write(nc_type)
 
         if values.dtype.char == 'S':
             nelems = values.itemsize
@@ -619,7 +618,7 @@ class netcdf_file(object):
         count = self._unpack_int()
 
         for dim in range(count):
-            name = asstr(self._unpack_string())
+            name = self._unpack_string()
             length = self._unpack_int() or None  # None for record dimension
             self.dimensions[name] = length
             self._dims.append(name)  # preserve order
@@ -636,7 +635,7 @@ class netcdf_file(object):
 
         attributes = OrderedDict()
         for attr in range(count):
-            name = asstr(self._unpack_string())
+            name = self._unpack_string()
             attributes[name] = self._read_att_values()
         return attributes
 
@@ -727,7 +726,7 @@ class netcdf_file(object):
                 self.variables[var].__dict__['data'] = rec_array[var]
 
     def _read_var(self):
-        name = asstr(self._unpack_string())
+        name = self._unpack_string()
         dimensions = []
         shape = []
         dims = self._unpack_int()
@@ -790,16 +789,17 @@ class netcdf_file(object):
         return frombuffer(self.fp.read(8), '>q')[0]
 
     def _pack_string(self, s):
+        s = s.encode()
         count = len(s)
         self._pack_int(count)
-        self.fp.write(asbytes(s))
+        self.fp.write(s)
         self.fp.write(b'\x00' * (-count % 4))  # pad
 
     def _unpack_string(self):
         count = self._unpack_int()
         s = self.fp.read(count).rstrip(b'\x00')
         self.fp.read(-count % 4)  # read padding
-        return s
+        return s.decode()
 
 
 class netcdf_variable(object):
