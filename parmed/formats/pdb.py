@@ -7,9 +7,11 @@ from contextlib import closing
 from functools import lru_cache, reduce
 from string import ascii_letters
 import io
-import ftplib
+import urllib
 import gzip
 import logging
+import urllib.error
+import urllib.request
 import numpy as np
 from ..exceptions import PDBError, PDBWarning
 from ..formats.pdbx import PdbxReader, PdbxWriter, containers
@@ -311,16 +313,18 @@ class PDBFile(metaclass=FileFormatType):
             raise ValueError('pdb_id must be the 4-letter PDB code')
 
         pdb_id = pdb_id.lower()
-        ftp = ftplib.FTP('ftp.wwpdb.org', timeout=timeout)
-        ftp.login()
+        
+        url = (
+            'https://files.wwpdb.org/pub/pdb/data/structures/divided/pdb/%s/pdb%s.ent.gz'
+        ) % (pdb_id[1:3], pdb_id)
+
         fileobj = io.BytesIO()
         try:
-            ftp_loc = f"/pub/pdb/data/structures/divided/pdb/{pdb_id[1:3]}/pdb{pdb_id}.ent.gz"
-            ftp.retrbinary(f"RETR {ftp_loc}", fileobj.write)
-        except ftplib.all_errors as err:
+            with urllib.request.urlopen(url, timeout=timeout) as response:
+                fileobj.write(response.read())
+        except (urllib.error.URLError, urllib.error.HTTPError) as err:
             raise IOError(f"Could not retrieve PDB ID {pdb_id}; {err}") from err
-        finally:
-            ftp.close()
+
         # Rewind, wrap it in a GzipFile and send it to parse
         fileobj.seek(0)
         fileobj = io.TextIOWrapper(gzip.GzipFile(fileobj=fileobj, mode='r'))
@@ -1180,17 +1184,18 @@ class CIFFile(metaclass=FileFormatType):
             raise ValueError('pdb_id must be the 4-letter PDB code')
 
         pdb_id = pdb_id.lower()
-        ftp = ftplib.FTP('ftp.wwpdb.org', timeout=timeout)
-        ftp.login()
+                
+        url = (
+            'https://files.wwpdb.org/pub/pdb/data/structures/divided/mmCIF/%s/%s.cif.gz'
+        ) % (pdb_id[1:3], pdb_id)
+        
         fileobj = io.BytesIO()
         try:
-            ftp.retrbinary('RETR /pub/pdb/data/structures/divided/mmCIF/'
-                           '%s/%s.cif.gz' % (pdb_id[1:3], pdb_id),
-                           fileobj.write)
-        except ftplib.all_errors as err:
-            raise IOError('Could not retrieve PDB ID %s; %s' % (pdb_id, err))
-        finally:
-            ftp.close()
+            with urllib.request.urlopen(url, timeout=timeout) as response:
+                fileobj.write(response.read())
+        except (urllib.error.URLError, urllib.error.HTTPError) as err:
+            raise IOError(f"Could not retrieve PDB ID {pdb_id}; {err}") from err
+        
         fileobj.seek(0)
         fileobj = io.TextIOWrapper(gzip.GzipFile(fileobj=fileobj, mode='r'))
         if saveto is not None:

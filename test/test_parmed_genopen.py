@@ -71,7 +71,8 @@ class TestGenopen(FileIOTestCase):
         with closing(genopen(url, 'r')) as f:
             self.assertEqual(f.read(), genopen(get_fn('4lzt.pdb.gz')).read())
 
-    @unittest.skipUnless(is_local(), 'Cannot download files from PDB with CI systems')
+    # @unittest.skipUnless(is_local(), 'Cannot download files from PDB with CI systems')
+    @unittest.skip('RCSB deprecated FTP protocol https://www.rcsb.org/news/feature/65562f0ad78e004e766a96c1')
     def test_read_ftp_URL(self):
         """ Tests genopen reading a ftp remote file """
         url = 'ftp://ftp.wwpdb.org/pub/pdb/data/structures/divided/mmCIF/05/205l.cif.gz'
