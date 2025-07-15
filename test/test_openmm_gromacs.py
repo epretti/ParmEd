@@ -14,6 +14,8 @@ from utils import (
     get_fn, CPU, has_openmm, mm, app, TestCaseRelative, run_all_tests, QuantityTestCase, HAS_GROMACS
 )
 
+EPSILON_0 = 8.8541878128e-12 * u.farad / u.meter
+
 # OpenMM NonbondedForce methods are enumerated values. From NonbondedForce.h,
 # they are:
 #   0 - NoCutoff
@@ -230,7 +232,14 @@ class TestGromacsTop(TestCaseRelative, QuantityTestCase):
         self.assertAlmostEqual(energies['bond'], 399.925189, places=4)
         self.assertAlmostEqual(energies['angle'], 36.18562, places=4)
         self.assertAlmostEqual(energies['dihedral'], 101.92265, places=4)
-        self.assertRelativeEqual(energies['nonbonded'], -18587.09715, places=4)
+
+        # For PME, OpenMM now includes the correct factor for non-neutral systems.
+        nonbonded, = (force for force in system.getForces() if isinstance(force, mm.NonbondedForce))
+        charge = sum(nonbonded.getParticleParameters(index)[0] / u.elementary_charge for index in range(nonbonded.getNumParticles())) * u.elementary_charge
+        alpha = nonbonded.getPMEParametersInContext(context)[0] / u.nanometer
+        volume = context.getState().getPeriodicBoxVolume()
+        plasma_correction = u.AVOGADRO_CONSTANT_NA * charge * charge / (8 * EPSILON_0 * volume * alpha * alpha)
+        self.assertRelativeEqual(energies['nonbonded'], -18587.09715 - plasma_correction.value_in_unit(u.kilojoules_per_mole), places=4)
 
     def test_dppc(self):
         """ Tests non-standard Gromacs force fields and nonbonded exceptions """
