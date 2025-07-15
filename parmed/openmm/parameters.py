@@ -1045,38 +1045,27 @@ class OpenMMParameterSet(ParameterSet, CharmmImproperMatchingMixin, metaclass=Fi
 
     def _write_omm_nonbonded(self, xml_root, skip_types, separate_ljforce):
         if not self.atom_types: return
-        # Compute conversion factors for writing in natrual OpenMM units.
+        # Compute conversion factors for writing in natural OpenMM units.
         length_conv = u.angstrom.conversion_factor_to(u.nanometer)
         ene_conv = u.kilocalories.conversion_factor_to(u.kilojoules)
 
         # Get the 1-4 scaling factors from the torsion list
-        scee, scnb = set(), set()
-        unscaled_atom_types = set()
-        for key in self.dihedral_types:
-            dt = self.dihedral_types[key]
-            for t in dt:
-                if t.scee == 1 and t.scnb == 1:
-                    unscaled_atom_types.add(key)
-                else:
-                    if t.scee: scee.add(t.scee)
-                    if t.scnb: scnb.add(t.scnb)
-        if len(unscaled_atom_types) > 0:
-            # If no 1-4 interactions are scaled, set the scale factors to 1.0.
-            if len(scee) == 0:
-                scee = {1.0}
-            if len(scnb) == 0:
-                scnb = {1.0}
-        if len(scee) > 1 or len(scnb) > 1:
-            scee_facs = ', '.join([str(x) for x in scee])
-            scnb_facs = ', '.join([str(x) for x in scnb])
-            raise NotImplementedError(
-                f'Cannot currently handle mixed 1-4 scaling: 1-4 eel [{scee_facs}] 1-4 vdw [{scnb_facs}]'
-            )
-        coulomb14scale = 1.0 / scee.pop() if scee else 1.0 / self.default_scee
-        lj14scale = 1.0 / scnb.pop() if scnb else 1.0 / self.default_scnb
+        scee = {}
+        scnb = {}
+        for key, dihedral_types in self.dihedral_types.items():
+            canonical_key = min(key, key[::-1])
+            for dihedral_type in dihedral_types:
+                if dihedral_type.scee and dihedral_type.scee != self.default_scee:
+                    if canonical_key in scee and scee[canonical_key] != dihedral_type.scee:
+                        warnings.warn(f"Overwriting SCEE value {scee[canonical_key]} for {"-".join(canonical_key)} with {dihedral_type.scee}", ParameterWarning)
+                    scee[canonical_key] = dihedral_type.scee
+                if dihedral_type.scnb and dihedral_type.scnb != self.default_scnb:
+                    if canonical_key in scnb and scnb[canonical_key] != dihedral_type.scnb:
+                        warnings.warn(f"Overwriting SCNB value {scnb[canonical_key]} for {"-".join(canonical_key)} with {dihedral_type.scnb}", ParameterWarning)
+                    scnb[canonical_key] = dihedral_type.scnb
 
         # Write NonbondedForce records.
-        xml_force = etree.SubElement(xml_root, 'NonbondedForce', coulomb14scale=str(coulomb14scale), lj14scale=str(lj14scale))
+        xml_force = etree.SubElement(xml_root, 'NonbondedForce', coulomb14scale=str(1.0 / self.default_scee), lj14scale=str(1.0 / self.default_scnb))
         etree.SubElement(xml_force, 'UseAttributeFromResidue', name="charge")
         for name, atom_type in self.atom_types.items():
             if name in skip_types: continue
@@ -1111,47 +1100,40 @@ class OpenMMParameterSet(ParameterSet, CharmmImproperMatchingMixin, metaclass=Fi
 
             attributes = { 'class' : name, 'sigma' : str(sigma), 'epsilon' : str(abs(epsilon)) }
             etree.SubElement(xml_force, 'Atom', **attributes)
-
-        if len(unscaled_atom_types) > 0 and (coulomb14scale != 1 or lj14scale != 1):
-            # Some 1-4 interactions should be unscaled.  Add a script to fix them.
-            types = ',\n    '.join('("%s","%s","%s","%s")' % s for s in sorted(unscaled_atom_types))
+        
+        if scee or scnb:
+            # Some 1-4 interactions use non-default scalings.  Add a script to fix them.
             script = etree.SubElement(xml_root, 'Script')
-            script.text = """
-# Some 1-4 interactions should be unscaled.
+            scee_table = "\n".join(["{"] + [f"    {key!r}: {value!r}" for key, value in scee.items()] + ["}"])
+            scnb_table = "\n".join(["{"] + [f"    {key!r}: {value!r}" for key, value in scnb.items()] + ["}"])
+            script.text = f"""
+import openmm
+import openmm.unit
 
-import openmm as mm
-import openmm.unit as unit
-import math
-unscaled_types = set([%s])
-
-# Identify 1-4 pairs whose interactions should not be scaled.
+scee_table = {scee_table}
+scnb_table = {scnb_table}
 
 atom_types = [data.atomType[atom] for atom in data.atoms]
-unscaled_pairs = set()
-for p1, p2, p3, p4 in data.propers:
-  types = (atom_types[p1], atom_types[p2], atom_types[p3], atom_types[p4])
-  if types in unscaled_types or reversed(types) in unscaled_types:
-    unscaled_pairs.add((p1, p4))
-
-# Fix the exception parameters for those pairs.
+overridden_pairs = {{}}
+for atom_1, atom_2, atom_3, atom_4 in data.propers:
+    types_key = (atom_types[atom_1], atom_types[atom_2], atom_types[atom_3], atom_types[atom_4])
+    pairs_key = (min(atom_1, atom_4), max(atom_1, atom_4))
+    if types_key in scee_table:
+        overridden_pairs.setdefault(pairs_key, [{self.default_scee}, {self.default_scnb}])[0] = scee_table[types_key]
+    if types_key in scnb_table:
+        overridden_pairs.setdefault(pairs_key, [{self.default_scee}, {self.default_scnb}])[1] = scnb_table[types_key]
 
 for force in sys.getForces():
-  if isinstance(force, mm.NonbondedForce):
-    atom_charges = {}
-    atom_sigmas = {}
-    atom_epsilons = {}
-    for atom in data.atoms:
-      index = atom.index
-      charge, sigma, epsilon = force.getParticleParameters(index)
-      atom_charges[index] = charge
-      atom_sigmas[index] = sigma
-      atom_epsilons[index] = epsilon
-    for i in range(force.getNumExceptions()):
-      p1, p2, chargeProd, sigma, epsilon = force.getExceptionParameters(i)
-      if chargeProd._value != 0 or epsilon._value != 0:
-        if (p1, p2) in unscaled_pairs or (p2, p1) in unscaled_pairs:
-          force.setExceptionParameters(i, p1, p2, atom_charges[p1]*atom_charges[p2], (atom_sigmas[p1]+atom_sigmas[p2])/2, unit.sqrt(atom_epsilons[p1]*atom_epsilons[p2]))
-""" % types
+    if isinstance(force, openmm.NonbondedForce):
+        charges, sigmas, epsilons = zip(*(force.getParticleParameters(index) for index in range(force.getNumParticles())))
+        for index in range(force.getNumExceptions()):
+            atom_1, atom_4, charge_prod, sigma, epsilon = force.getExceptionParameters(index)
+            if charge_prod or epsilon:
+                pairs_key = (min(atom_1, atom_4), max(atom_1, atom_4))
+                if pairs_key in overridden_pairs:
+                    scee, scnb = overridden_pairs[pairs_key]
+                    force.setExceptionParameters(index, atom_1, atom_4, charges[atom_1] * charges[atom_4] / scee, (sigmas[atom_1] + sigmas[atom_4]) / 2, openmm.unit.sqrt(epsilons[atom_1] * epsilons[atom_4]) / scnb)
+"""
 
     def _write_omm_LennardJonesForce(self, xml_root, skip_types, separate_ljforce):
         if not self.nbfix_types and not separate_ljforce: return
