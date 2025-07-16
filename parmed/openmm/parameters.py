@@ -1057,11 +1057,11 @@ class OpenMMParameterSet(ParameterSet, CharmmImproperMatchingMixin, metaclass=Fi
             for dihedral_type in dihedral_types:
                 if dihedral_type.scee and dihedral_type.scee != self.default_scee:
                     if canonical_key in scee and scee[canonical_key] != dihedral_type.scee:
-                        warnings.warn(f"Overwriting SCEE value {scee[canonical_key]} for {"-".join(canonical_key)} with {dihedral_type.scee}", ParameterWarning)
+                        warnings.warn(f"Overwriting SCEE value {scee[canonical_key]} for {'-'.join(canonical_key)} with {dihedral_type.scee}", ParameterWarning)
                     scee[canonical_key] = dihedral_type.scee
                 if dihedral_type.scnb and dihedral_type.scnb != self.default_scnb:
                     if canonical_key in scnb and scnb[canonical_key] != dihedral_type.scnb:
-                        warnings.warn(f"Overwriting SCNB value {scnb[canonical_key]} for {"-".join(canonical_key)} with {dihedral_type.scnb}", ParameterWarning)
+                        warnings.warn(f"Overwriting SCNB value {scnb[canonical_key]} for {'-'.join(canonical_key)} with {dihedral_type.scnb}", ParameterWarning)
                     scnb[canonical_key] = dihedral_type.scnb
 
         # We don't know what order the types will be in when checking, and some
