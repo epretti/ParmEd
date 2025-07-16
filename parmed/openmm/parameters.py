@@ -1064,6 +1064,14 @@ class OpenMMParameterSet(ParameterSet, CharmmImproperMatchingMixin, metaclass=Fi
                         warnings.warn(f"Overwriting SCNB value {scnb[canonical_key]} for {"-".join(canonical_key)} with {dihedral_type.scnb}", ParameterWarning)
                     scnb[canonical_key] = dihedral_type.scnb
 
+        # We don't know what order the types will be in when checking, and some
+        # other script might change the type names, so instead of relying on
+        # sorting them for the lookup in the script, add reversed types here.
+        for key in tuple(scee):
+            scee[key[::-1]] = scee[key]
+        for key in tuple(scnb):
+            scnb[key[::-1]] = scnb[key]
+
         # Write NonbondedForce records.
         xml_force = etree.SubElement(xml_root, 'NonbondedForce', coulomb14scale=str(1.0 / self.default_scee), lj14scale=str(1.0 / self.default_scnb))
         etree.SubElement(xml_force, 'UseAttributeFromResidue', name="charge")
@@ -1104,8 +1112,8 @@ class OpenMMParameterSet(ParameterSet, CharmmImproperMatchingMixin, metaclass=Fi
         if scee or scnb:
             # Some 1-4 interactions use non-default scalings.  Add a script to fix them.
             script = etree.SubElement(xml_root, 'Script')
-            scee_table = "\n".join(["{"] + [f"    {key!r}: {value!r}" for key, value in scee.items()] + ["}"])
-            scnb_table = "\n".join(["{"] + [f"    {key!r}: {value!r}" for key, value in scnb.items()] + ["}"])
+            scee_table = "\n".join(["{"] + [f"    {key!r}: {value!r}," for key, value in scee.items()] + ["}"])
+            scnb_table = "\n".join(["{"] + [f"    {key!r}: {value!r}," for key, value in scnb.items()] + ["}"])
             script.text = f"""
 import openmm
 import openmm.unit
