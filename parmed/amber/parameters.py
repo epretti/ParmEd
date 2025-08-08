@@ -703,11 +703,17 @@ class AmberParameterSet(ParameterSet, metaclass=FileFormatType):
         a1, a2, a3, a4, k, phi, per = rematch.groups()
         a1 = a1.strip(); a2 = a2.strip();
         a3 = a3.strip(); a4 = a4.strip()
-        # Pre-sort the improper types, assuming atom3 is the central atom (which
-        # it must be in Amber parameter files!!!!)
+        # ParmEd relies on sorting improper atom types to look up impropers (OK,
+        # and what Amber does), but then discards the original order and uses
+        # completely broken logic to try to write the correct order to OpenMM
+        # FFXML files.  Squirrel away the real order in a field _real_key so we
+        # can pull it back out later when needed.
+        real_key = (a1, a2, a3, a4)
         a1, a2, a4 = sorted([a1, a2, a4])
         key = (a1, a2, a3, a4)
-        self.improper_periodic_types[key] = DihedralType(float(k), float(per), float(phi))
+        dihedral_type = DihedralType(float(k), float(per), float(phi))
+        dihedral_type._real_key = real_key
+        self.improper_periodic_types[key] = dihedral_type
 
     def _process_nonbond_line(self, line):
         try:

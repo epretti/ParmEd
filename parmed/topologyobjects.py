@@ -2530,6 +2530,7 @@ class DihedralType(_ParameterType, _ListItem):
         self.list = list
         self._idx = -1
         self.locked = True
+        self._real_key = None
 
     #===================================================
 
