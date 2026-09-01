@@ -276,7 +276,7 @@ class OpenMMParameterSet(ParameterSet, CharmmImproperMatchingMixin, metaclass=Fi
         return atom.type
 
     def write(self, dest, provenance=None, write_unused=True, separate_ljforce=False,
-              improper_dihedrals_ordering='default', charmm_imp=False, skip_duplicates=True, is_glycam=False):
+              improper_dihedrals_ordering='default', charmm_imp=False, skip_duplicates=True, is_glycam=False, keep_types=None):
         """ Write the parameter set to an XML file for use with OpenMM
 
         Parameters
@@ -336,6 +336,8 @@ class OpenMMParameterSet(ParameterSet, CharmmImproperMatchingMixin, metaclass=Fi
             hashing is not aware of chirality, if you wish to use the results in
             simulations you will need to explicitly provide the template names
             for affected residues.
+        keep_types : iterable of str or None
+            Atom types not to discard even when write_unused is False.
 
         Notes
         -----
@@ -347,6 +349,8 @@ class OpenMMParameterSet(ParameterSet, CharmmImproperMatchingMixin, metaclass=Fi
         if not write_unused:
             skip_residues = self._find_unused_residues()
             skip_types = self._find_unused_types(skip_residues)
+            if keep_types is not None:
+                skip_types -= set(keep_types)
             if skip_residues:
                 warnings.warn('Some residue templates using unavailable AtomTypes '
                               'were found. They will not be written to the ffxml '
@@ -629,46 +633,78 @@ class OpenMMParameterSet(ParameterSet, CharmmImproperMatchingMixin, metaclass=Fi
             atoms in the residue with external bonds
         """
 
+        residue = self.residues[residue_name]
+
         # If its a sulfate (special case), the S is the atom with an external bond
         if residue_name == 'SO3':
-            return [atom for atom in self.residues[residue_name] if atom.name == 'S1']
+            return [atom for atom in residue if atom.name == 'S1']
 
         # Define dict of valences for each atom (in glycan residues)
-        d = {'C': 4, 'N': 3, 'O': 2, 'H': 1} # Key: atom element name, Value: number of bonds it should have
+        valence_table = {'C': 4, 'N': 3, 'O': 2, 'H': 1} # Key: atom element name, Value: number of bonds it should have
 
-        # Iterate over the atoms in the residue and determine whether it has an external bond
-        external_bonds = []
-        for atom in self.residues[residue_name].atoms:
-            bonds = 0
-
-            # Add an extra bond if the atom is the O in a carbonyl (double bond)
-            if atom.name in ['OD1', 'O', 'O2N', 'OXT']:
-                bonds += 1
-
-            # Count the number of bonds this atom has within the residue
-            for bond in self.residues[residue_name].bonds:
-                if bond.atom1 == atom or bond.atom2 == atom:
-                    bonds += 1
-
-                # Add extra bonds if the atom is the C in a carbonyl
-                if (bond.atom1.name == 'OD1' and bond.atom2 == atom) or (bond.atom1 == atom and bond.atom2.name == 'OD1'):
-                    bonds += 1
-                elif (bond.atom1.name == 'O' and bond.atom2 == atom) or (bond.atom1 == atom and bond.atom2.name == 'O'):
-                    bonds += 1
-                elif (bond.atom1.name == 'O2N' and bond.atom2 == atom) or (bond.atom1 == atom and bond.atom2.name == 'O2N'):
-                    bonds += 1
-                elif (bond.atom1.name == 'OXT' and bond.atom2 == atom) or (bond.atom1 == atom and bond.atom2.name == 'OXT'):
-                    bonds += 1
-             
-            # Get the atom's element name
+        # Build a list of element names for the atoms.
+        element_names = []
+        for atom in residue.atoms:
             if atom.element_name == 'Og': # If the atom is in a glycan, the element names are not set properly
                 element_name = atom.name[0]
             else:
                 element_name = atom.element_name
+            element_names.append(element_name)
 
-            # If the number of bonds within the residue does not equal the number of bonds the atom should have, the atom  has an external bond 
-            if d[element_name] != bonds:
-                external_bonds.append(atom)
+        expected_valences = []
+        actual_valences = []
+
+        # Build a list of the number of bonds we expect for each atom.
+        for element_name in element_names:
+            expected_valences.append(valence_table[element_name])
+            actual_valences.append(0)
+
+        # Add single bonds.
+        for bond in residue.bonds:
+            actual_valences[bond.atom1.idx] += 1
+            actual_valences[bond.atom2.idx] += 1
+
+        # Prepare a list of bonds to each atom.
+        bonds_to_atoms = [[] for atom in residue.atoms]
+        for bond in residue.bonds:
+            bonds_to_atoms[bond.atom1.idx].append(bond.atom2.idx)
+            bonds_to_atoms[bond.atom2.idx].append(bond.atom1.idx)
+
+        # Use it to search for carboxylates.
+        for index in range(len(residue.atoms)):
+            bond_elements = [element_names[bonded_index] for bonded_index in bonds_to_atoms[index]]
+
+            if element_names[index] == 'C':
+                bond_oxygens = [bonded_index for bonded_index, bond_element in zip(bonds_to_atoms[index], bond_elements) if bond_element == 'O']
+
+                # If this is a carbon, and it is bonded to two oxygens that are
+                # only bonded to this carbon, we found a -COO[-].
+                if len(bond_elements) == 3 and len(bond_oxygens) == 2 and all(bonds_to_atoms[oxygen_index] == [index] for oxygen_index in bond_oxygens):
+                    expected_valences[index] -= 1
+                    for oxygen_index in bond_oxygens:
+                        expected_valences[oxygen_index] -= 1
+
+        # Add double bonds.
+        for bond in residue.bonds:
+            index_1 = bond.atom1.idx
+            index_2 = bond.atom2.idx
+            if actual_valences[index_1] < expected_valences[index_1] and actual_valences[index_2] < expected_valences[index_2]:
+                actual_valences[index_1] += 1
+                actual_valences[index_2] += 1
+
+        # If any nitrogen atoms have actual - expected = 1, this is OK as it
+        # indicates that the nitrogen is positively charged.
+        for atom, element_name, actual, expected in zip(residue.atoms, element_names, actual_valences, expected_valences):
+            if actual - expected > (1 if element_name == 'N' else 0):
+                raise ValueError(f"bonding in GLYCAM residue {residue.name} at atom {atom.name} not understood")
+
+        external_bonds = [atom for atom, expected, actual in zip(residue.atoms, expected_valences, actual_valences) if actual < expected]
+
+        # Move the head and the tail to the front of the list for consistent ordering.
+        for head_or_tail in (residue.tail, residue.head):
+            if head_or_tail in external_bonds:
+                external_bonds.remove(head_or_tail)
+                external_bonds.insert(0, head_or_tail)
 
         return external_bonds
 
@@ -708,15 +744,17 @@ class OpenMMParameterSet(ParameterSet, CharmmImproperMatchingMixin, metaclass=Fi
                 etree.SubElement(xml_residue, 'VirtualSite', self._get_lonepair_parameters(lonepair))
             for atom in residue.connections:
                 etree.SubElement(xml_residue, 'ExternalBond', atomName=atom.name)
-            if residue.head is not None:
-                etree.SubElement(xml_residue, 'ExternalBond', atomName=residue.head.name)
-            if residue.tail is not None and residue.tail is not residue.head:
-                etree.SubElement(xml_residue, 'ExternalBond', atomName=residue.tail.name)
             if is_glycam:
+                # For GLYCAM, do not trust the given head and tail as they may
+                # be incorrect in the source files.
                 external_bonds = self._get_atoms_with_external_bonds(name)
                 for atom in external_bonds:
-                    if atom != residue.head and atom != residue.tail:
-                        etree.SubElement(xml_residue, 'ExternalBond', atomName=atom.name)
+                    etree.SubElement(xml_residue, 'ExternalBond', atomName=atom.name)
+            else:
+                if residue.head is not None:
+                    etree.SubElement(xml_residue, 'ExternalBond', atomName=residue.head.name)
+                if residue.tail is not None and residue.tail is not residue.head:
+                    etree.SubElement(xml_residue, 'ExternalBond', atomName=residue.tail.name)
             if residue.name in valid_patches_for_residue:
                 for patch_name in valid_patches_for_residue[residue.name]:
                     etree.SubElement(xml_residue, 'AllowPatch', name=patch_name)
@@ -1007,38 +1045,35 @@ class OpenMMParameterSet(ParameterSet, CharmmImproperMatchingMixin, metaclass=Fi
 
     def _write_omm_nonbonded(self, xml_root, skip_types, separate_ljforce):
         if not self.atom_types: return
-        # Compute conversion factors for writing in natrual OpenMM units.
+        # Compute conversion factors for writing in natural OpenMM units.
         length_conv = u.angstrom.conversion_factor_to(u.nanometer)
         ene_conv = u.kilocalories.conversion_factor_to(u.kilojoules)
 
         # Get the 1-4 scaling factors from the torsion list
-        scee, scnb = set(), set()
-        unscaled_atom_types = set()
-        for key in self.dihedral_types:
-            dt = self.dihedral_types[key]
-            for t in dt:
-                if t.scee == 1 and t.scnb == 1:
-                    unscaled_atom_types.add(key)
-                else:
-                    if t.scee: scee.add(t.scee)
-                    if t.scnb: scnb.add(t.scnb)
-        if len(unscaled_atom_types) > 0:
-            # If no 1-4 interactions are scaled, set the scale factors to 1.0.
-            if len(scee) == 0:
-                scee = {1.0}
-            if len(scnb) == 0:
-                scnb = {1.0}
-        if len(scee) > 1 or len(scnb) > 1:
-            scee_facs = ', '.join([str(x) for x in scee])
-            scnb_facs = ', '.join([str(x) for x in scnb])
-            raise NotImplementedError(
-                f'Cannot currently handle mixed 1-4 scaling: 1-4 eel [{scee_facs}] 1-4 vdw [{scnb_facs}]'
-            )
-        coulomb14scale = 1.0 / scee.pop() if scee else 1.0 / self.default_scee
-        lj14scale = 1.0 / scnb.pop() if scnb else 1.0 / self.default_scnb
+        scee = {}
+        scnb = {}
+        for key, dihedral_types in self.dihedral_types.items():
+            canonical_key = min(key, key[::-1])
+            for dihedral_type in dihedral_types:
+                if dihedral_type.scee and dihedral_type.scee != self.default_scee:
+                    if canonical_key in scee and scee[canonical_key] != dihedral_type.scee:
+                        warnings.warn(f"Overwriting SCEE value {scee[canonical_key]} for {'-'.join(canonical_key)} with {dihedral_type.scee}", ParameterWarning)
+                    scee[canonical_key] = dihedral_type.scee
+                if dihedral_type.scnb and dihedral_type.scnb != self.default_scnb:
+                    if canonical_key in scnb and scnb[canonical_key] != dihedral_type.scnb:
+                        warnings.warn(f"Overwriting SCNB value {scnb[canonical_key]} for {'-'.join(canonical_key)} with {dihedral_type.scnb}", ParameterWarning)
+                    scnb[canonical_key] = dihedral_type.scnb
+
+        # We don't know what order the types will be in when checking, and some
+        # other script might change the type names, so instead of relying on
+        # sorting them for the lookup in the script, add reversed types here.
+        for key in tuple(scee):
+            scee[key[::-1]] = scee[key]
+        for key in tuple(scnb):
+            scnb[key[::-1]] = scnb[key]
 
         # Write NonbondedForce records.
-        xml_force = etree.SubElement(xml_root, 'NonbondedForce', coulomb14scale=str(coulomb14scale), lj14scale=str(lj14scale))
+        xml_force = etree.SubElement(xml_root, 'NonbondedForce', coulomb14scale=str(1.0 / self.default_scee), lj14scale=str(1.0 / self.default_scnb))
         etree.SubElement(xml_force, 'UseAttributeFromResidue', name="charge")
         for name, atom_type in self.atom_types.items():
             if name in skip_types: continue
@@ -1073,47 +1108,40 @@ class OpenMMParameterSet(ParameterSet, CharmmImproperMatchingMixin, metaclass=Fi
 
             attributes = { 'class' : name, 'sigma' : str(sigma), 'epsilon' : str(abs(epsilon)) }
             etree.SubElement(xml_force, 'Atom', **attributes)
-
-        if len(unscaled_atom_types) > 0 and (coulomb14scale != 1 or lj14scale != 1):
-            # Some 1-4 interactions should be unscaled.  Add a script to fix them.
-            types = ',\n    '.join('("%s","%s","%s","%s")' % s for s in sorted(unscaled_atom_types))
+        
+        if scee or scnb:
+            # Some 1-4 interactions use non-default scalings.  Add a script to fix them.
             script = etree.SubElement(xml_root, 'Script')
-            script.text = """
-# Some 1-4 interactions should be unscaled.
+            scee_table = "\n".join(["{"] + [f"    {key!r}: {value!r}," for key, value in scee.items()] + ["}"])
+            scnb_table = "\n".join(["{"] + [f"    {key!r}: {value!r}," for key, value in scnb.items()] + ["}"])
+            script.text = f"""
+import openmm
+import openmm.unit
 
-import openmm as mm
-import openmm.unit as unit
-import math
-unscaled_types = set([%s])
-
-# Identify 1-4 pairs whose interactions should not be scaled.
+scee_table = {scee_table}
+scnb_table = {scnb_table}
 
 atom_types = [data.atomType[atom] for atom in data.atoms]
-unscaled_pairs = set()
-for p1, p2, p3, p4 in data.propers:
-  types = (atom_types[p1], atom_types[p2], atom_types[p3], atom_types[p4])
-  if types in unscaled_types or reversed(types) in unscaled_types:
-    unscaled_pairs.add((p1, p4))
-
-# Fix the exception parameters for those pairs.
+overridden_pairs = {{}}
+for atom_1, atom_2, atom_3, atom_4 in data.propers:
+    types_key = (atom_types[atom_1], atom_types[atom_2], atom_types[atom_3], atom_types[atom_4])
+    pairs_key = (min(atom_1, atom_4), max(atom_1, atom_4))
+    if types_key in scee_table:
+        overridden_pairs.setdefault(pairs_key, [{self.default_scee}, {self.default_scnb}])[0] = scee_table[types_key]
+    if types_key in scnb_table:
+        overridden_pairs.setdefault(pairs_key, [{self.default_scee}, {self.default_scnb}])[1] = scnb_table[types_key]
 
 for force in sys.getForces():
-  if isinstance(force, mm.NonbondedForce):
-    atom_charges = {}
-    atom_sigmas = {}
-    atom_epsilons = {}
-    for atom in data.atoms:
-      index = atom.index
-      charge, sigma, epsilon = force.getParticleParameters(index)
-      atom_charges[index] = charge
-      atom_sigmas[index] = sigma
-      atom_epsilons[index] = epsilon
-    for i in range(force.getNumExceptions()):
-      p1, p2, chargeProd, sigma, epsilon = force.getExceptionParameters(i)
-      if chargeProd._value != 0 or epsilon._value != 0:
-        if (p1, p2) in unscaled_pairs or (p2, p1) in unscaled_pairs:
-          force.setExceptionParameters(i, p1, p2, atom_charges[p1]*atom_charges[p2], (atom_sigmas[p1]+atom_sigmas[p2])/2, unit.sqrt(atom_epsilons[p1]*atom_epsilons[p2]))
-""" % types
+    if isinstance(force, openmm.NonbondedForce):
+        charges, sigmas, epsilons = zip(*(force.getParticleParameters(index) for index in range(force.getNumParticles())))
+        for index in range(force.getNumExceptions()):
+            atom_1, atom_4, charge_prod, sigma, epsilon = force.getExceptionParameters(index)
+            if charge_prod or epsilon:
+                pairs_key = (min(atom_1, atom_4), max(atom_1, atom_4))
+                if pairs_key in overridden_pairs:
+                    scee, scnb = overridden_pairs[pairs_key]
+                    force.setExceptionParameters(index, atom_1, atom_4, charges[atom_1] * charges[atom_4] / scee, (sigmas[atom_1] + sigmas[atom_4]) / 2, openmm.unit.sqrt(epsilons[atom_1] * epsilons[atom_4]) / scnb)
+"""
 
     def _write_omm_LennardJonesForce(self, xml_root, skip_types, separate_ljforce):
         if not self.nbfix_types and not separate_ljforce: return
