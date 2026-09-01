@@ -974,8 +974,15 @@ class OpenMMParameterSet(ParameterSet, CharmmImproperMatchingMixin, metaclass=Fi
         # periodic impropers, so we don't have to worry about that here.
         for (a2, a3, a1, a4), improp in self.improper_periodic_types.items():
             if any((a in skip_types for a in (a1, a2, a3, a4))): continue
-            if improp._real_key is not None:
-                a2, a3, a1, a4 = improp._real_key
+            # Try to make the wild-cards in the middle
+            if a4 == 'X':
+                if a2 != 'X':
+                    a2, a4 = a4, a2
+                elif a3 != 'X':
+                    a3, a4 = a4, a3
+            if a2 != 'X' and a3 == 'X':
+                # Single wild-card entries put the wild-card in position 2
+                a2, a3 = a3, a2
             etree.SubElement(xml_force, 'Improper', class1=a1, class2=nowild(a2), class3=nowild(a3), class4=nowild(a4),
                        periodicity1=str(improp.per), phase1=str(improp.phase*pconv), k1=str(improp.phi_k*kconv))
 
